@@ -9,11 +9,14 @@ use pki_types::{SignatureVerificationAlgorithm, UnixTime};
 use crate::cert::lenient_certificate_serial_number;
 use crate::crl::crl_signature_err;
 use crate::der::{self, CONSTRUCTED, CONTEXT_SPECIFIC, DerIterator, FromDer, Tag};
+use crate::cert::Cert;
 use crate::error::{DerTypeId, Error};
 use crate::public_values_eq;
 use crate::signed_data::{self, SignedData};
 use crate::subject_name::GeneralName;
-use crate::verify_cert::{Budget, PathNode, Role};
+use crate::verify_cert::{Budget, Role};
+#[cfg(test)]
+use crate::verify_cert::PathNode;
 use crate::x509::{
     DistributionPointName, Extension, UnknownExtensionPolicy, remember_extension,
     set_extension_once,
@@ -93,10 +96,20 @@ impl CertRevocationList<'_> {
     ///       distribution point extension.
     ///
     /// In all other circumstances the CRL is not considered authoritative.
+    #[cfg(test)]
     pub(crate) fn authoritative(&self, path: &PathNode<'_>, name_comparison: fn(&[u8], &[u8]) -> bool) -> bool {
+        self.authoritative_certificate(path.cert, path.role(), name_comparison)
+    }
+
+    pub(crate) fn authoritative_certificate(
+        &self,
+        cert: &Cert<'_>,
+        role: Role,
+        name_comparison: fn(&[u8], &[u8]) -> bool,
+    ) -> bool {
         // In all cases we require that the authoritative CRL have the same issuer
         // as the certificate. Recall we do not support indirect CRLs.
-        if !name_comparison(self.issuer(), path.cert.issuer()) {
+        if !name_comparison(self.issuer(), cert.issuer()) {
             return false;
         }
 
@@ -116,7 +129,7 @@ impl CertRevocationList<'_> {
             None => return true,
         };
 
-        crl_idp.authoritative_for(path)
+        crl_idp.authoritative_certificate(cert, role)
     }
 
     /// Verify the CRL signature using the issuer certificate and a list of supported signature
@@ -144,13 +157,17 @@ impl CertRevocationList<'_> {
         .map_err(crl_signature_err)
     }
 
-    /// Checks the verification time is before the time in the CRL nextUpdate field.
-    pub(crate) fn check_expiration(&self, time: UnixTime) -> Result<(), Error> {
-        let next_update = match self {
+    /// Checks the verification time falls within the CRL's thisUpdate and nextUpdate interval.
+    pub(crate) fn check_validity(&self, time: UnixTime) -> Result<(), Error> {
+        let (this_update, next_update) = match self {
             #[cfg(feature = "alloc")]
-            CertRevocationList::Owned(crl) => crl.next_update,
-            CertRevocationList::Borrowed(crl) => crl.next_update,
+            CertRevocationList::Owned(crl) => (crl.this_update, crl.next_update),
+            CertRevocationList::Borrowed(crl) => (crl.this_update, crl.next_update),
         };
+
+        if time < this_update {
+            return Err(Error::CrlNotYetValid { time, this_update });
+        }
 
         if time >= next_update {
             return Err(Error::CrlExpired { time, next_update });
@@ -175,6 +192,8 @@ pub struct OwnedCertRevocationList {
     issuing_distribution_point: Option<Vec<u8>>,
 
     signed_data: signed_data::OwnedSignedData,
+
+    this_update: UnixTime,
 
     next_update: UnixTime,
 }
@@ -226,6 +245,8 @@ pub struct BorrowedCertRevocationList<'a> {
     /// List of certificates revoked by the issuer in this CRL.
     revoked_certs: untrusted::Input<'a>,
 
+    this_update: UnixTime,
+
     next_update: UnixTime,
 }
 
@@ -264,6 +285,7 @@ impl<'a> BorrowedCertRevocationList<'a> {
                 .issuing_distribution_point
                 .map(|idp| idp.as_slice_less_safe().to_vec()),
             revoked_certs,
+            this_update: self.this_update,
             next_update: self.next_update,
         })
     }
@@ -376,7 +398,7 @@ impl<'a> FromDer<'a> for BorrowedCertRevocationList<'a> {
             //    encoded as UTCTime or GeneralizedTime.
             // We do not presently enforce the correct choice of UTCTime or GeneralizedTime based on
             // whether the date is post 2050.
-            UnixTime::from_der(tbs_cert_list)?;
+            let this_update = UnixTime::from_der(tbs_cert_list)?;
 
             // While OPTIONAL in the ASN.1 module, RFC 5280 §5.1.2.5 says:
             //   Conforming CRL issuers MUST include the nextUpdate field in all CRLs.
@@ -403,6 +425,7 @@ impl<'a> FromDer<'a> for BorrowedCertRevocationList<'a> {
                 issuer,
                 revoked_certs,
                 issuing_distribution_point: None,
+                this_update,
                 next_update,
             };
 
@@ -587,17 +610,22 @@ impl<'a> IssuingDistributionPoint<'a> {
     /// * Distribution point names relative to an issuer.
     /// * General names of a type other than URI.
     /// * Malformed names or invalid IDP or CRL DP extensions.
+    #[cfg(test)]
     pub(crate) fn authoritative_for(&self, node: &PathNode<'a>) -> bool {
+        self.authoritative_certificate(node.cert, node.role())
+    }
+
+    pub(crate) fn authoritative_certificate(&self, cert: &Cert<'_>, role: Role) -> bool {
         assert!(!self.only_contains_attribute_certs); // We check this at time of parse.
 
         // Check that the scope of the CRL issuing distribution point could include the cert.
-        if self.only_contains_ca_certs && node.role() != Role::Issuer
-            || self.only_contains_user_certs && node.role() != Role::EndEntity
+        if self.only_contains_ca_certs && role != Role::Issuer
+            || self.only_contains_user_certs && role != Role::EndEntity
         {
             return false; // CRL scope excludes this cert's role.
         }
 
-        let cert_dps = match node.cert.crl_distribution_points() {
+        let cert_dps = match cert.crl_distribution_points() {
             // If the certificate has no distribution points, then the CRL can be authoritative
             // based on the issuer matching and the scope including the cert.
             None => return true,
@@ -1242,7 +1270,7 @@ mod tests {
         //  Friday, February 2, 2024 8:26:19 PM GMT
         let time = UnixTime::since_unix_epoch(Duration::from_secs(1_706_905_579));
         assert!(matches!(
-            crl.check_expiration(time),
+            crl.check_validity(time),
             Err(Error::CrlExpired { .. })
         ));
     }
@@ -1255,7 +1283,7 @@ mod tests {
         let expiration_time = 1_666_210_326;
         let time = UnixTime::since_unix_epoch(Duration::from_secs(expiration_time - 1000));
 
-        assert!(matches!(crl.check_expiration(time), Ok(())));
+        assert!(matches!(crl.check_validity(time), Ok(())));
     }
 
     #[test]
