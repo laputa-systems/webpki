@@ -39,6 +39,7 @@ pub(crate) struct ChainOptions<'a, 'p, V> {
     pub(crate) intermediate_certs: &'p [CertificateDer<'p>],
     pub(crate) revocation: Option<RevocationOptions<'a>>,
     pub(crate) distrusted_spkis: &'a [&'a [u8]],
+    pub(crate) name_comparison: fn(&[u8], &[u8]) -> bool,
 }
 
 impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
@@ -79,7 +80,7 @@ impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
         let result =
             loop_while_non_fatal_error(Error::UnknownIssuer, self.trust_anchors, |trust_anchor| {
                 let trust_anchor_subject = untrusted::Input::from(trust_anchor.subject.as_ref());
-                if !public_values_eq(path.head().issuer, trust_anchor_subject) {
+                if !self.names_equal(path.head().issuer, trust_anchor_subject) {
                     return Err(Error::UnknownIssuer.into());
                 }
 
@@ -123,21 +124,22 @@ impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
 
         loop_while_non_fatal_error(err, self.intermediate_certs, |cert_der| {
             let potential_issuer = Cert::from_der(untrusted::Input::from(cert_der))?;
-            if !public_values_eq(potential_issuer.subject, path.head().issuer) {
+            if !self.names_equal(potential_issuer.subject, path.head().issuer) {
                 return Err(Error::UnknownIssuer.into());
             }
 
             // Prevent loops; see RFC 4158 section 5.2.
             if path.node().iter().any(|prev| {
                 public_values_eq(potential_issuer.spki, prev.cert.spki)
-                    && public_values_eq(potential_issuer.subject, prev.cert.subject)
+                    && self.names_equal(potential_issuer.subject, prev.cert.subject)
             }) {
                 return Err(Error::UnknownIssuer.into());
             }
 
             let next_sub_ca_count = match role {
                 Role::EndEntity => sub_ca_count,
-                Role::Issuer => sub_ca_count + 1,
+                Role::Issuer => sub_ca_count
+                    + usize::from(!self.names_equal(path.head().subject, path.head().issuer)),
             };
 
             budget.consume_build_chain_call()?;
@@ -149,6 +151,10 @@ impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
 
             result
         })
+    }
+
+    fn names_equal(&self, left: untrusted::Input<'_>, right: untrusted::Input<'_>) -> bool {
+        (self.name_comparison)(left.as_slice_less_safe(), right.as_slice_less_safe())
     }
 
     fn check_signed_chain(
@@ -178,6 +184,7 @@ impl<'a, 'p: 'a, V: ExtendedKeyUsageValidator> ChainOptions<'a, 'p, V> {
                     self.supported_sig_algs,
                     budget,
                     time,
+                    self.name_comparison,
                 )?;
             }
 
@@ -213,6 +220,17 @@ impl<'p> VerifiedPath<'p> {
             },
             anchor,
         }
+    }
+
+    /// Validate a DNS name against every name constraint in this verified path.
+    pub fn verify_common_name_constraints(&'p self, name: &str) -> Result<(), Error> {
+        subject_name::check_dns_name_constraints(
+            self.anchor.name_constraints.as_ref().map(|value| untrusted::Input::from(value.as_ref())), name,
+        )?;
+        for certificate in self.intermediate_certificates() {
+            subject_name::check_dns_name_constraints(certificate.name_constraints, name)?;
+        }
+        Ok(())
     }
 
     /// Yields a (double-ended) iterator over the intermediate certificates in this path.
@@ -1260,6 +1278,7 @@ mod tests {
                 intermediate_certs: intermediates,
                 revocation: None,
                 distrusted_spkis,
+                name_comparison: |left, right| left == right,
             }
             .build_chain(
                 ee_cert,
@@ -1520,6 +1539,7 @@ mod tests {
             intermediate_certs,
             revocation: None,
             distrusted_spkis: DISTRUSTED_SPKIS,
+            name_comparison: |left, right| left == right,
         };
 
         match opts.build_chain_inner(

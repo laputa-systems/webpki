@@ -92,6 +92,7 @@ pub use {
         UnsupportedSignatureAlgorithmForPublicKeyContext,
     },
     rpk_entity::RawPublicKeyEntity,
+    subject_name::common_name_matches,
     trust_anchor::anchor_from_trusted_cert,
     verify_cert::{
         ExtendedKeyUsageValidator, IntermediateIterator, KeyPurposeId, KeyPurposeIdIter, KeyUsage,

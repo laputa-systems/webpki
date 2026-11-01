@@ -86,6 +86,33 @@ pub(crate) fn check_name_constraints(
     Ok(())
 }
 
+/// Match a legacy subject common name using the DNS-ID matcher.
+pub fn common_name_matches(presented: &str, expected: &pki_types::DnsName<'_>) -> Result<bool, Error> {
+    dns_name::presented_id_matches_reference_id(
+        untrusted::Input::from(presented.as_bytes()), IdRole::Reference,
+        untrusted::Input::from(expected.as_ref().as_bytes()),
+    )
+}
+
+pub(crate) fn check_dns_name_constraints(
+    constraints: Option<untrusted::Input<'_>>,
+    name: &str,
+) -> Result<(), Error> {
+    untrusted::read_all_optional(constraints, Error::BadDer, |constraints| {
+        let Some(constraints) = constraints else { return Ok(()); };
+        let permitted = if constraints.peek(der::Tag::ContextSpecificConstructed0.into()) {
+            Some(der::expect_tag(constraints, der::Tag::ContextSpecificConstructed0)?)
+        } else { None };
+        let excluded = if constraints.peek(der::Tag::ContextSpecificConstructed1.into()) {
+            Some(der::expect_tag(constraints, der::Tag::ContextSpecificConstructed1)?)
+        } else { None };
+        check_presented_id_conforms_to_constraints(
+            GeneralName::DnsName(untrusted::Input::from(name.as_bytes())),
+            permitted, excluded, &mut Budget::default(),
+        ).unwrap_or(Ok(()))
+    })
+}
+
 fn check_presented_id_conforms_to_constraints(
     name: GeneralName<'_>,
     permitted_subtrees: Option<untrusted::Input<'_>>,
