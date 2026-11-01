@@ -25,6 +25,45 @@ use pki_types::{AlgorithmIdentifier, ServerName};
 
 use crate::verify_cert::RequiredEkuNotFoundContext;
 
+/// A certificate policy violation with a defined X.509 verification cause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CertificatePolicyViolation {
+    /// The certificate is not a valid certification authority.
+    InvalidCaCertificate,
+    /// A path length constraint is present on a non-CA certificate.
+    PathLengthOnNonCaCertificate,
+    /// A path length constraint is present without `keyCertSign` usage.
+    PathLengthWithoutKeyCertSign,
+    /// `keyCertSign` is set on a non-CA certificate.
+    KeyCertSignOnNonCaCertificate,
+    /// The issuer distinguished name is empty.
+    EmptyIssuerName,
+    /// The subject distinguished name is empty.
+    EmptySubjectName,
+    /// The Authority Key Identifier extension is missing.
+    MissingAuthorityKeyIdentifier,
+    /// A CA certificate's Subject Key Identifier extension is missing.
+    MissingSubjectKeyIdentifier,
+    /// The Subject Alternative Name extension contains no names.
+    EmptySubjectAlternativeName,
+    /// An empty subject has a noncritical Subject Alternative Name extension.
+    EmptySubjectWithNoncriticalSubjectAlternativeName,
+    /// A CA certificate's Basic Constraints extension is not critical.
+    NoncriticalCaBasicConstraints,
+    /// The Authority Key Identifier extension is critical.
+    CriticalAuthorityKeyIdentifier,
+    /// The Subject Key Identifier extension is critical.
+    CriticalSubjectKeyIdentifier,
+    /// A CA certificate is missing the Key Usage extension.
+    CaMissingKeyUsage,
+    /// Certificate extensions are used by a certificate older than X.509 v3.
+    ExtensionsRequireX509V3,
+    /// The signature algorithm identifiers in the certificate disagree.
+    SignatureAlgorithmMismatch,
+    /// The certificate is not suitable for the requested TLS purpose.
+    InvalidPurpose,
+}
+
 /// An error that occurs during certificate validation or name validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -88,6 +127,9 @@ pub enum Error {
 
     /// An X.509 extension is invalid.
     ExtensionValueInvalid,
+
+    /// A certificate violates a specific X.509 policy rule.
+    CertificatePolicyViolation(CertificatePolicyViolation),
 
     /// The certificate validity period (notBefore, notAfter) is invalid; e.g.
     /// the notAfter time is earlier than the notBefore time.
@@ -308,6 +350,7 @@ impl Error {
             #[allow(deprecated)]
             Self::RequiredEkuNotFound | Self::RequiredEkuNotFoundContext(_) => 240,
             Self::NameConstraintViolation => 230,
+            Self::ExtensionValueInvalid | Self::CertificatePolicyViolation(_) => 30,
             Self::PathLenConstraintViolated => 220,
             Self::CaUsedAsEndEntity | Self::EndEntityUsedAsCa => 210,
             Self::IssuerNotCrlSigner => 200,
@@ -344,7 +387,6 @@ impl Error {
             Self::MalformedDnsIdentifier => 60,
             Self::MalformedNameConstraint => 50,
             Self::MalformedExtensions | Self::TrailingData(_) => 40,
-            Self::ExtensionValueInvalid => 30,
 
             // Generic DER errors.
             Self::BadDerTime => 20,

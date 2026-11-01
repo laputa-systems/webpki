@@ -86,7 +86,8 @@ pub use {
     der::DerIterator,
     end_entity::EndEntityCert,
     error::{
-        DerTypeId, Error, InvalidNameContext, UnsupportedSignatureAlgorithmContext,
+        CertificatePolicyViolation, DerTypeId, Error, InvalidNameContext,
+        UnsupportedSignatureAlgorithmContext,
         UnsupportedSignatureAlgorithmForPublicKeyContext,
     },
     rpk_entity::RawPublicKeyEntity,
