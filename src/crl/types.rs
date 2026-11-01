@@ -93,10 +93,10 @@ impl CertRevocationList<'_> {
     ///       distribution point extension.
     ///
     /// In all other circumstances the CRL is not considered authoritative.
-    pub(crate) fn authoritative(&self, path: &PathNode<'_>) -> bool {
+    pub(crate) fn authoritative(&self, path: &PathNode<'_>, name_comparison: fn(&[u8], &[u8]) -> bool) -> bool {
         // In all cases we require that the authoritative CRL have the same issuer
         // as the certificate. Recall we do not support indirect CRLs.
-        if self.issuer() != path.cert.issuer() {
+        if !name_comparison(self.issuer(), path.cert.issuer()) {
             return false;
         }
 
@@ -1215,7 +1215,7 @@ mod tests {
         let path = PartialPath::new(&ee);
 
         // The CRL should not be authoritative for an EE issued by a different issuer.
-        assert!(!crl.authoritative(&path.node()));
+        assert!(!crl.authoritative(&path.node(), |left, right| left == right));
     }
 
     #[test]
@@ -1232,7 +1232,7 @@ mod tests {
 
         // The CRL should be considered authoritative, the issuers match, the CRL has no IDP and the
         // cert has no CRL DPs.
-        assert!(crl.authoritative(&path.node()));
+        assert!(crl.authoritative(&path.node(), |left, right| left == right));
     }
 
     #[test]

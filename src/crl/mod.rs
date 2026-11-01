@@ -16,7 +16,7 @@ use pki_types::{SignatureVerificationAlgorithm, UnixTime};
 
 use crate::error::Error;
 use crate::verify_cert::{Budget, PathNode, Role};
-use crate::{der, public_values_eq};
+use crate::der;
 
 use core::fmt::Debug;
 
@@ -121,8 +121,9 @@ impl RevocationOptions<'_> {
         supported_sig_algs: &[&dyn SignatureVerificationAlgorithm],
         budget: &mut Budget,
         time: UnixTime,
+        name_comparison: fn(&[u8], &[u8]) -> bool,
     ) -> Result<Option<CertNotRevoked>, Error> {
-        assert!(public_values_eq(path.cert.issuer, issuer_subject));
+        assert!(name_comparison(path.cert.issuer(), issuer_subject.as_slice_less_safe()));
 
         // If the policy only specifies checking EndEntity revocation state and we're looking at an
         // issuer certificate, return early without considering the certificate's revocation state.
@@ -133,7 +134,7 @@ impl RevocationOptions<'_> {
         let crl = self
             .crls
             .iter()
-            .find(|candidate_crl| candidate_crl.authoritative(path));
+            .find(|candidate_crl| candidate_crl.authoritative(path, name_comparison));
 
         use UnknownStatusPolicy::*;
         let crl = match (crl, self.status_policy) {

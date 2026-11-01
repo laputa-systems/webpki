@@ -110,12 +110,32 @@ impl EndEntityCert<'_> {
         revocation: Option<RevocationOptions<'_>>,
         verify_path: Option<&dyn Fn(&VerifiedPath<'_>) -> Result<(), Error>>,
     ) -> Result<VerifiedPath<'p>, Error> {
+        self.verify_for_usage_with_name_comparison(
+            supported_sig_algs, trust_anchors, intermediate_certs, time,
+            usage, revocation, verify_path, |left, right| left == right,
+        )
+    }
+
+    /// Verify a path using the supplied comparison of DER Name sequence contents.
+    /// The comparison affects issuer selection and CRL authority, never signatures.
+    pub fn verify_for_usage_with_name_comparison<'p>(
+        &'p self,
+        supported_sig_algs: &[&dyn SignatureVerificationAlgorithm],
+        trust_anchors: &'p [TrustAnchor<'_>],
+        intermediate_certs: &'p [CertificateDer<'p>],
+        time: UnixTime,
+        usage: impl ExtendedKeyUsageValidator,
+        revocation: Option<RevocationOptions<'_>>,
+        verify_path: Option<&dyn Fn(&VerifiedPath<'_>) -> Result<(), Error>>,
+        name_comparison: fn(&[u8], &[u8]) -> bool,
+    ) -> Result<VerifiedPath<'p>, Error> {
         verify_cert::ChainOptions {
             eku: usage,
             supported_sig_algs,
             trust_anchors,
             intermediate_certs,
             revocation,
+            name_comparison,
         }
         .build_chain(self, time, verify_path)
     }
