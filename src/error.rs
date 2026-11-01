@@ -74,6 +74,15 @@ pub enum Error {
         next_update: UnixTime,
     },
 
+    /// The CRL is not yet valid; i.e. the verification time is earlier than the time
+    /// in the CRL thisUpdate field.
+    CrlNotYetValid {
+        /// The validation time.
+        time: UnixTime,
+        /// The thisUpdate time of the CRL.
+        this_update: UnixTime,
+    },
+
     /// The certificate has an Extended Key Usage extension without any EKU values.
     EmptyEkuExtension,
 
@@ -298,7 +307,8 @@ impl Error {
             Self::CertDistrusted
             | Self::CertRevoked
             | Self::UnknownRevocationStatus
-            | Self::CrlExpired { .. } => 270,
+            | Self::CrlExpired { .. }
+            | Self::CrlNotYetValid { .. } => 270,
             Self::InvalidCrlSignatureForPublicKey | Self::InvalidSignatureForPublicKey => 260,
             Self::SignatureAlgorithmMismatch => 250,
             Self::EmptyEkuExtension => 245,

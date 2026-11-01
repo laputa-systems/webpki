@@ -12,8 +12,9 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-use pki_types::{SignatureVerificationAlgorithm, UnixTime};
+use pki_types::{CertificateDer, SignatureVerificationAlgorithm, UnixTime};
 
+use crate::cert::Cert;
 use crate::error::Error;
 use crate::verify_cert::{Budget, PathNode, Role};
 use crate::der;
@@ -111,6 +112,38 @@ pub struct RevocationOptions<'a> {
 }
 
 impl RevocationOptions<'_> {
+    /// Checks the revocation status of a self-issued trust anchor.
+    pub fn check_trusted_certificate(
+        &self,
+        cert_der: &CertificateDer<'_>,
+        supported_sig_algs: &[&dyn SignatureVerificationAlgorithm],
+        time: UnixTime,
+        name_comparison: fn(&[u8], &[u8]) -> bool,
+    ) -> Result<(), Error> {
+        if self.depth == RevocationCheckDepth::EndEntity {
+            return Ok(());
+        }
+
+        let cert = Cert::for_trust_anchor(untrusted::Input::from(cert_der.as_ref()))?;
+        if !name_comparison(cert.issuer(), cert.subject()) {
+            return Err(Error::UnknownRevocationStatus);
+        }
+
+        let mut budget = Budget::default();
+        self.check_certificate(
+            &cert,
+            Role::Issuer,
+            cert.subject,
+            cert.spki,
+            cert.key_usage,
+            supported_sig_algs,
+            &mut budget,
+            time,
+            name_comparison,
+        )
+        .map(|_| ())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn check(
         &self,
@@ -123,18 +156,44 @@ impl RevocationOptions<'_> {
         time: UnixTime,
         name_comparison: fn(&[u8], &[u8]) -> bool,
     ) -> Result<Option<CertNotRevoked>, Error> {
-        assert!(name_comparison(path.cert.issuer(), issuer_subject.as_slice_less_safe()));
+        self.check_certificate(
+            path.cert,
+            path.role(),
+            issuer_subject,
+            issuer_spki,
+            issuer_ku,
+            supported_sig_algs,
+            budget,
+            time,
+            name_comparison,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_certificate(
+        &self,
+        cert: &Cert<'_>,
+        role: Role,
+        issuer_subject: untrusted::Input<'_>,
+        issuer_spki: untrusted::Input<'_>,
+        issuer_ku: Option<untrusted::Input<'_>>,
+        supported_sig_algs: &[&dyn SignatureVerificationAlgorithm],
+        budget: &mut Budget,
+        time: UnixTime,
+        name_comparison: fn(&[u8], &[u8]) -> bool,
+    ) -> Result<Option<CertNotRevoked>, Error> {
+        assert!(name_comparison(cert.issuer(), issuer_subject.as_slice_less_safe()));
 
         // If the policy only specifies checking EndEntity revocation state and we're looking at an
         // issuer certificate, return early without considering the certificate's revocation state.
-        if let (RevocationCheckDepth::EndEntity, Role::Issuer) = (self.depth, path.role()) {
+        if let (RevocationCheckDepth::EndEntity, Role::Issuer) = (self.depth, role) {
             return Ok(None);
         }
 
         let crl = self
             .crls
             .iter()
-            .find(|candidate_crl| candidate_crl.authoritative(path, name_comparison));
+            .find(|candidate_crl| candidate_crl.authoritative_certificate(cert, role, name_comparison));
 
         use UnknownStatusPolicy::*;
         let crl = match (crl, self.status_policy) {
@@ -154,14 +213,14 @@ impl RevocationOptions<'_> {
             .map_err(crl_signature_err)?;
 
         if self.expiration_policy == ExpirationPolicy::Enforce {
-            crl.check_expiration(time)?;
+            crl.check_validity(time)?;
         }
 
         // Verify that if the issuer has a KeyUsage bitstring it asserts cRLSign.
         KeyUsageMode::CrlSign.check(issuer_ku)?;
 
         // Try to find the cert serial in the verified CRL contents.
-        let cert_serial = path.cert.serial.as_slice_less_safe();
+        let cert_serial = cert.serial.as_slice_less_safe();
         match crl.find_serial(cert_serial)? {
             None => Ok(Some(CertNotRevoked::assertion())),
             Some(_) => Err(Error::CertRevoked),
@@ -248,13 +307,13 @@ pub enum UnknownStatusPolicy {
     Deny,
 }
 
-/// Describes how to handle the nextUpdate field of the CRL (i.e. expiration).
+/// Describes how to handle CRL validity times.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ExpirationPolicy {
-    /// Enforce the verification time is before the time in the nextUpdate field.
-    /// Treats an expired CRL as an error condition yielding [Error::CrlExpired].
+    /// Enforce the verification time is at or after thisUpdate and before nextUpdate.
+    /// Treats future-dated and expired CRLs as errors.
     Enforce,
-    /// Ignore the CRL nextUpdate field.
+    /// Ignore the CRL thisUpdate and nextUpdate fields.
     Ignore,
 }
 
