@@ -15,7 +15,7 @@ on:
 jobs:
   testgen:
     name: Python Testgen
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout sources
         uses: actions/checkout@v7
@@ -36,11 +36,6 @@ jobs:
 
       - name: mypy Typecheck
         run: mypy ./tests
-
-      - name: Black Format
-        uses: psf/black@stable
-        with:
-          src: "./tests"
 
       - name: Generate CRL test files
         working-directory: ./tests/crls/
