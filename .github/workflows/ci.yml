@@ -1,173 +1,29 @@
 name: ci
 
-permissions:
-  contents: read
-
 on:
-  push:
-    branches: ["main", "ci/*"]
   pull_request:
-  merge_group:
-  schedule:
-    - cron: "0 18 * * *"
-  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions: {}
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.head_ref || github.run_id }}"
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
 
 jobs:
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-26.04
+  ci:
+    name: ci
+    runs-on: ubuntu-26.04-arm
+    permissions:
+      contents: read
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - run: cargo clippy --locked --all-features --all-targets -- --deny warnings
-
-  deny:
-    name: Cargo Deny
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@v2
-
-  # Verify that documentation builds.
-  rustdoc:
-    name: Check for documentation errors
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: cargo doc (all features)
-        run: cargo doc --locked --all-features --document-private-items
-        env:
-          RUSTDOCFLAGS: -Dwarnings --cfg=webpki_docsrs
-
-  package:
-    name: Cargo Package
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - run: cargo package --locked --all-features
-
-  test:
-    name: Build+test
-    runs-on: ubuntu-26.04
-    strategy:
-      matrix:
-        features:
-          -  # Default
-          - --features alloc
-          - --all-features
-          - --no-default-features
-          - --no-default-features --features alloc
-
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: cargo test (${{ matrix.features }})
-        run: cargo test --locked ${{ matrix.features }} -- --include-ignored
-
-  cross:
-    name: Check cross compilation targets
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Install cross
-        uses: taiki-e/install-action@cross
-
-      - run: cross build --locked --target i686-unknown-linux-gnu
-
-  semver:
-    name: Check semver compatibility
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Check semver
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-
-  coverage:
-    name: Measure coverage
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - run: rustup component add llvm-tools
-
-      - name: Measure coverage
-        run: cargo llvm-cov --locked --all-features --lcov --output-path ./lcov.info -- --include-ignored
-
-      - name: Report to codecov.io
-        uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./lcov.info
-          fail_ci_if_error: false
-
-  nostd:
-    name: Verify that no-std modes do not rely on libstd
-    runs-on: ubuntu-26.04
-    # a target without a pre-compiled libstd like this one will catch any use of libstd in the
-    # entire dependency graph whereas a target like x86_64-unknown-linux-gnu will not
-    env:
-      NOSTD_TARGET: x86_64-unknown-none
-    strategy:
-      matrix:
-        features:
-          - --no-default-features
-          - --no-default-features --features alloc
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - run: rustup target add "$NOSTD_TARGET"
-
-      - name: check no-std mode
-        run: cargo check --locked --target "$NOSTD_TARGET" ${{ matrix.features  }}
-
-  feature-powerset:
-    name: Feature Powerset
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Install cargo hack
-        uses: taiki-e/install-action@cargo-hack
-
-      - name: Check feature powerset
-        run: >
-          cargo hack check
-          --feature-powerset
-          --no-dev-deps
+      - name: test
+        run: make test
